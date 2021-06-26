@@ -1,0 +1,47 @@
+/*
+ * serial_log_uart.h
+ *
+ *  Created on: Mar 12, 2021
+ *      Author: RanaBasheer
+ */
+
+#ifndef SERIAL_LOG_STREAM_H_
+#define SERIAL_LOG_STREAM_H_
+
+
+typedef enum serial_log_stream_state_t
+{
+    SERIAL_LOG_STREAM_INACTIVE,
+
+    SERIAL_LOG_STREAM_SEND_DATA_HEADER,
+    SERIAL_LOG_STREAM_SEND_DATA,
+    SERIAL_LOG_STREAM_DATA_DONE,
+
+    SERIAL_LOG_STREAM_START_INFO,
+    SERIAL_LOG_STREAM_SEND_INFO_TITLE_HEADER,
+    SERIAL_LOG_STREAM_SEND_INFO_TITLE,
+    SERIAL_LOG_STREAM_SEND_INFO_NAME_HEADER,
+    SERIAL_LOG_STREAM_SEND_INFO_NAME,
+    SERIAL_LOG_STREAM_INFO_NAME_DONE,
+
+    SERIAL_LOG_STREAM_SEND_INPUT_HEADER,
+    SERIAL_LOG_STREAM_INFO_INPUT_DONE,
+
+    SERIAL_LOG_STREAM_SEND_BYTE,
+    SERIAL_LOG_STREAM_SEND_ACK_WAIT_BYTE,
+    SERIAL_LOG_STREAM_SEND_BYTE_ACK
+
+}serial_log_stream_state_t;
+
+typedef enum log_serial_packet_id_t
+{
+    LOG_STREAM_INFO_TITLE_PACKET_ID = 0,
+    LOG_STREAM_INFO_NAME_PACKET_ID,
+    LOG_STREAM_DATA_PACKET_ID,
+    LOG_STREAM_INFO_INPUT_PACKET_ID
+} log_serial_packet_id_t;
+
+void serial_log_stream_handler(uint32_t in_current_time);
+void serial_log_stream_handler_init();
+
+#endif /* SERIAL_LOG_STREAM_H_ */
