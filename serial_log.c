@@ -22,6 +22,7 @@ static void *memory_buffer;
 uint32_t memory_buffer_size;
 uint32_t memory_buffer_position;
 static bool timer_initialized = false;
+static uint16_t sampling_rate = 1;
 #define CHAR_STORAGE_FACTOR (SERIAL_LOG_BYTES_TO_BITS(1)>>3)
 
 //#define SERIAL_LOG_DEBUG_PRINTF
@@ -145,7 +146,7 @@ static int *allocate_memory(uint32_t size)
 /*
  * allocate a new log stream inside the log ptr
  */
-static log_stream_t *allocate_new_log_stream(const char *name, int total_stream_count)
+static log_stream_t *allocate_new_log_stream(const char *name, float *data_ptr, int total_stream_count)
 {
     int i, length;
     int *memory;
@@ -170,6 +171,9 @@ static log_stream_t *allocate_new_log_stream(const char *name, int total_stream_
     }
     //assign memory for storing the stream name
     log_stream_ptr->name = (char *)memory;
+    //assign the data_ptr and the value;
+    log_stream_ptr->data_ptr = data_ptr;
+    log_stream_ptr->data_value = *data_ptr;
     //copy the title of this log into this space
     log_str_copy(log_stream_ptr->name, (char *)name, MAX_NAME_SIZE-1);
 
@@ -365,6 +369,42 @@ void serial_log_handler(uint32_t in_current_ms)
 }
 
 /*
+ * this is the function that samples all the output data and is called
+ * SAMPLING_RATE per second
+ */
+static void log_all_output_data()
+{
+    int i, j;
+    bool store_data = false;
+    //check through all active logs to find output logs
+    for(i = 0; i < MAX_LOGS; ++i)
+    {
+        log_t *log_ptr = logs[i];
+        if(log_ptr == NULL)
+            continue;
+        if(log_ptr->direction != LOG_OUTPUT)
+            continue;
+        float lpf = log_ptr->lpf;
+        //store data if the sample count reached the store count
+        if(++log_ptr->sample_count > log_ptr->store_count)
+        {
+            store_data = true;
+            log_ptr->sample_count = 0;
+        }
+        for(j = 0; j < MAX_LOG_STREAM_COUNT; ++j)
+        {
+            log_stream_t *log_stream_ptr = STREAMS(log_ptr)[j];//log_ptr->type.output.streams[j];
+            if(log_stream_ptr == NULL)
+                continue;
+            //apply low pass filtering based on their bandwidth
+            log_stream_ptr->data_value = lpf*(*log_stream_ptr->data_ptr)+(1-lpf)*log_stream_ptr->data_value;
+            if(store_data)
+                log_data(log_stream_ptr, log_stream_ptr->data_value);
+        }
+    }
+}
+
+/*
  * array of data to be stored, one for each stream
  */
 bool serial_log_data(void *log_input_ptr,...)
@@ -395,12 +435,13 @@ bool serial_log_data(void *log_input_ptr,...)
 /*
  * This is the total memory available for logging data
  */
-void serial_log_init(void *buffer, uint32_t buffer_size)
+void serial_log_init(void *buffer, uint32_t buffer_size, uint16_t sampling_rate_in_hz)
 {
     int i;
     memory_buffer = buffer;
     memory_buffer_size = buffer_size;
     memory_buffer_position = 0;
+    sampling_rate = sampling_rate_in_hz;
     for(i = 0; i < MAX_LOGS; ++i)
     {
         logs[i] = NULL;
@@ -410,7 +451,7 @@ void serial_log_init(void *buffer, uint32_t buffer_size)
 }
 
 
-void *serial_log_output(const char * title, uint32_t buffer_size, int stream_count,...)
+void *serial_log_output(const char * title, uint16_t bandwidth_in_hz, int stream_count,...)
 {
     int i, j, length,memory_size_per_buffer;
     log_t *log_ptr;
@@ -437,7 +478,8 @@ void *serial_log_output(const char * title, uint32_t buffer_size, int stream_cou
     for(i = 0; i < stream_count; ++i)
     {
         const char *stream_name = va_arg( stream_list, const char *);
-        STREAMS(log_ptr)[i] = allocate_new_log_stream(stream_name, stream_count);
+        float *data_ptr = va_arg( stream_list, float *);
+        STREAMS(log_ptr)[i] = allocate_new_log_stream(stream_name, data_ptr, stream_count);
         if(STREAMS(log_ptr)[i] == NULL)
         {
             //we ran out of memory
@@ -448,8 +490,12 @@ void *serial_log_output(const char * title, uint32_t buffer_size, int stream_cou
     }
     va_end(stream_list);
 
-
-    //Now allocate space for storing the data
+    log_ptr->lpf = (float)bandwidth_in_hz/(2*3.14*sampling_rate);
+    log_ptr->sample_count = 0;
+    log_ptr->store_count = (float)sampling_rate/(float)bandwidth_in_hz;
+    //Now allocate space for storing the data. We will allocate enough space to
+    //store data for 100ms. So at 1000Hz sampling rate that will be 100 float units of space
+    uint32_t buffer_size = ((float)bandwidth_in_hz/(float)STORAGE_TIME_IN_MS)
     //buffer size has to be divided among the MAX_STREAM_DATA_BUFFERS
     memory_size_per_buffer = ((buffer_size + MAX_STREAM_DATA_BUFFERS - 1)/MAX_STREAM_DATA_BUFFERS);
     memory_size_per_buffer&=(~(uint32_t)(sizeof(uint32_t)-1)); //make sure that the buffer_size is divisible by uint32_t data type

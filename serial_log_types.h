@@ -14,8 +14,8 @@
 #define MAX_LOG_STREAM_COUNT    3   //cannot be changed
 #define MAX_LOGS                16  //cannot be changed
 #define MAX_STREAM_DATA_BUFFERS 4
-#define MAX_NAME_SIZE           64 //max number of characters used for log names
-
+#define MAX_NAME_SIZE           64  //max number of characters used for log names
+#define STORAGE_TIME_IN_MS      100 //no. of milliseconds for which data is stored before send to the host computer
 
 
 #define INVALID_LOG_INDEX       -1
@@ -79,6 +79,8 @@ typedef struct log_stream_t
     log_stream_compress_t compress;
 
     char *name;
+    float *data_ptr;
+    float data_value;
 } log_stream_t;
 
 #define STREAMS(log_ptr) (log_ptr->type.output.streams)
@@ -106,6 +108,10 @@ typedef struct log_t
     int stream_count;
     log_stream_t *streams[MAX_LOG_STREAM_COUNT];   //
     char *title;
+
+    uint16_t sample_count; //incremented at each sampling tick
+    uint16_t store_count;  //when the number of sample count reaches the store count, data is written into the output stream
+    float lpf; //this is the low pass filtering coefficient
 } log_t;
 
 
