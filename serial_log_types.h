@@ -49,6 +49,14 @@ typedef enum log_stream_data_state_t
 
 }log_stream_data_state_t;
 
+typedef enum log_trigger_state_t
+{
+    TRIGGER_WAIT_FOR_NEGATIVE_TRANSITION,
+    TRIGGER_WAIT_FOR_POSITIVE_TRANSITION,
+    TRIGGER_ACTIVE,
+    TRIGGER_WAIT_FOR_TX_BUFFER_EMPTY
+}log_trigger_state_t;
+
 typedef struct log_stream_data_t
 {
     uint32_t *data_ptr; //stream of floating data
@@ -81,6 +89,7 @@ typedef struct log_stream_t
     char *name;
     float *data_ptr;
     float data_value;
+    float dc_value;
 } log_stream_t;
 
 #define STREAMS(log_ptr) (log_ptr->type.output.streams)
