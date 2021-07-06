@@ -21,10 +21,8 @@ log_error_code_t error_code;
 static void *memory_buffer;
 uint32_t memory_buffer_size;
 uint32_t memory_buffer_position;
-static bool timer_initialized = false;
 static uint16_t sampling_rate; //rate at which signal is sampled. Default is 1ms.
-static uint16_t timer_ticks;
-static uint32_t in_current_ms;
+//static uint16_t timer_ticks;
 #define CHAR_STORAGE_FACTOR (SERIAL_LOG_BYTES_TO_BITS(1)>>3)
 
 //#define SERIAL_LOG_DEBUG_PRINTF
@@ -360,16 +358,52 @@ void serial_log_close(void *log_input_ptr)
  * returns false if all the data buffers for every stream is not transmitting.
  * else it return true indicating a data buffer is in transit for this output log
  */
-static bool init_output_data_buffers(log_t *log_ptr)
+static bool wait_output_data_buffers_empty(log_t *log_ptr)
 {
     int i,j;
     bool in_transit = false;
-    log_stream_ptr->active_stream_data_ptr = NULL;
     for(j = 0; j < MAX_LOG_STREAM_COUNT; ++j)
     {
         log_stream_t *log_stream_ptr = STREAMS(log_ptr)[j];//log_ptr->type.output.streams[j];
         if(log_stream_ptr == NULL)
             continue;
+        if(log_stream_ptr->active_stream_data_ptr != NULL)
+        {
+            //if the active stream is still being filled. then stop it
+            if(log_stream_ptr->active_stream_data_ptr->state == SERIAL_LOG_DATA_FILLING)
+            {
+                log_stream_ptr->active_stream_data_ptr->state = SERIAL_LOG_DATA_READY;
+                log_stream_ptr->active_stream_data_ptr = NULL;
+            }
+        }
+        for(i = 0; i < MAX_STREAM_DATA_BUFFERS; ++i)
+        {
+            if(log_stream_ptr->buffers[i]->state != SERIAL_LOG_DATA_NOT_SET)
+            {
+                in_transit = true;
+                break;
+            }
+        }
+    }
+    return in_transit;
+}
+
+
+/*
+ * returns false if all the data buffers for every stream is not transmitting.
+ * else it return true indicating a data buffer is in transit for this output log
+ */
+static bool reset_output_data_buffers(log_t *log_ptr)
+{
+    int i,j;
+    bool in_transit = false;
+    //log_stream_ptr->active_stream_data_ptr = NULL;
+    for(j = 0; j < MAX_LOG_STREAM_COUNT; ++j)
+    {
+        log_stream_t *log_stream_ptr = STREAMS(log_ptr)[j];//log_ptr->type.output.streams[j];
+        if(log_stream_ptr == NULL)
+            continue;
+        log_stream_ptr->active_stream_data_ptr = NULL;
         for(i = 0; i < MAX_STREAM_DATA_BUFFERS; ++i)
         {
             if(log_stream_ptr->buffers[i]->state != SERIAL_LOG_DATA_TRANSMITTING)
@@ -391,7 +425,7 @@ static void log_all_output_data()
 {
     int i, j;
     bool store_data = false;
-    bool tx_buffer_active = true;
+    //bool tx_buffer_active = true;
     //check through all active logs to find output logs
     for(i = 0; i < MAX_LOGS; ++i)
     {
@@ -400,16 +434,16 @@ static void log_all_output_data()
             continue;
         if(log_ptr->direction != LOG_OUTPUT)
             continue;
-        float lpf = log_ptr->lpf;
-        float dc_lpf  = lpf/100.0;
-        log_trigger_state_t log_state = log_ptr->trigger_state;
+        float lpf = log_ptr->type.output.lpf;
+        float dc_lpf  = lpf/10.0;
+        log_trigger_state_t log_state = log_ptr->type.output.trigger_state;
         if(log_state == TRIGGER_ACTIVE)
         {
             //store data if the sample count reached the store count
-            if(++log_ptr->sample_count > log_ptr->store_count)
+            if(++log_ptr->type.output.sample_count > log_ptr->type.output.sample_index)
             {
                 store_data = true;
-                log_ptr->sample_count = 0;
+                log_ptr->type.output.sample_count = 0;
             }
         }
 
@@ -429,13 +463,20 @@ static void log_all_output_data()
                     //we are waiting for all the buffers to be empty
                     //check to see if any data buffer is not in SERIAL_LOG_DATA_NOT_SET
                     //tx_buffer_active&=log_stream_ptr->
-                    log_state = init_output_data_buffers(log_ptr)?TRIGGER_WAIT_FOR_TX_BUFFER_EMPTY:TRIGGER_WAIT_FOR_NEGATIVE_TRANSITION;
+                    log_state = wait_output_data_buffers_empty(log_ptr)?TRIGGER_WAIT_FOR_TX_BUFFER_EMPTY:TRIGGER_WAIT_FOR_NEGATIVE_TRANSITION;
+                }
+                if(log_state == TRIGGER_WAIT_FOR_TX_BUFFER_OVFLOW)
+                {
+                    //we are waiting for all the buffers to be empty
+                    //check to see if any data buffer is not in SERIAL_LOG_DATA_NOT_SET
+                    //tx_buffer_active&=log_stream_ptr->
+                    log_state = reset_output_data_buffers(log_ptr)?TRIGGER_WAIT_FOR_TX_BUFFER_OVFLOW:TRIGGER_WAIT_FOR_NEGATIVE_TRANSITION;
                 }
                 if(log_state == TRIGGER_WAIT_FOR_NEGATIVE_TRANSITION)
                 {
                     if(log_stream_ptr->data_value <= log_stream_ptr->dc_value)
                     {
-                        log_stream_ptr->state = TRIGGER_WAIT_FOR_POSITIVE_TRANSITION;
+                        log_state = TRIGGER_WAIT_FOR_POSITIVE_TRANSITION;
                     }
                 }
                 if(log_state == TRIGGER_WAIT_FOR_POSITIVE_TRANSITION)
@@ -443,9 +484,15 @@ static void log_all_output_data()
                     if(log_stream_ptr->data_value > log_stream_ptr->dc_value)
                     {
                         log_state = TRIGGER_ACTIVE;
-                        log_ptr->sample_count = 0;
+                        log_ptr->type.output.sample_count = 0;
+                        log_ptr->type.output.store_count = 0;
                         store_data = true;
                     }
+                }
+                if(!store_data)
+                {
+                    //if we are not storing data then all other streams doesn't matter.
+                   break;
                 }
             }
             if(store_data)
@@ -454,25 +501,42 @@ static void log_all_output_data()
                 {
                     //we ran out of space to send the data. So we have to drop this capture entirely
                     //and send a new set of data.
+                    log_state = TRIGGER_WAIT_FOR_TX_BUFFER_OVFLOW;
+                    break;
+                }
+                log_ptr->type.output.store_count++;
+                if(log_ptr->type.output.store_count > 384)
+                {
                     log_state = TRIGGER_WAIT_FOR_TX_BUFFER_EMPTY;
                     break;
+                    /*if(log_stream_ptr->active_stream_data_ptr)
+                    {
+                        log_stream_ptr->active_stream_data_ptr->state = SERIAL_LOG_DATA_READY;
+                    }*/
                 }
             }
         }
 
-        log_ptr->trigger_state = log_state;
+        log_ptr->type.output.trigger_state = log_state;
     }
 }
 
 /*
  * This function is expected to be called once every sampling tick.
  */
-void serial_log_handler()
+void serial_log_sample_data()
 {
     log_all_output_data();
-    in_current_ms += timer_ticks;
+}
+
+/*
+ * This function is expected to be called in the main loop
+ */
+void serial_log_handler(uint32_t in_current_ms)
+{
     serial_log_stream_handler(in_current_ms);
 }
+
 
 #if 0
 /*
@@ -514,8 +578,7 @@ void serial_log_init(void *buffer, uint32_t buffer_size, uint16_t sampling_rate_
     memory_buffer_size = buffer_size;
     memory_buffer_position = 0;
     sampling_rate = sampling_rate_in_hz;
-    timer_ticks = (1000 + sampling_rate/2)/sampling_rate;
-    in_current_ms = 0;
+    //timer_ticks = (1000 + sampling_rate/2)/sampling_rate;
     for(i = 0; i < MAX_LOGS; ++i)
     {
         logs[i] = NULL;
@@ -564,15 +627,16 @@ void *serial_log_output(const char * title, uint16_t bandwidth_in_hz, int stream
     }
     va_end(stream_list);
 
-    log_ptr->lpf = (float)bandwidth_in_hz/(2*3.14*sampling_rate);
-    log_ptr->sample_count = 0;
-    log_ptr->store_count = (float)sampling_rate/(float)bandwidth_in_hz;
+    log_ptr->type.output.lpf = (float)bandwidth_in_hz/(2*3.14*sampling_rate);
+    log_ptr->type.output.sample_count = 0;
+    //output should be sampled atleast twice the bandwidth
+    log_ptr->type.output.sample_index = (sampling_rate + 2*bandwidth_in_hz - 1)/(2*bandwidth_in_hz);
     //Now allocate space for storing the data. We will allocate enough space to
     //store data for 100ms. So at 1000Hz sampling rate that will be 100 float units of space
-    uint32_t buffer_size = ((float)bandwidth_in_hz/(float)STORAGE_TIME_IN_MS)
+    uint32_t buffer_size = ((uint32_t)sampling_rate*STORAGE_TIME_IN_MS + (uint32_t)log_ptr->type.output.sample_index*1000 - 1)/ ((uint32_t)log_ptr->type.output.sample_index*1000); //(bandwidth_in_hz + STORAGE_TIME_IN_MS - 1)/STORAGE_TIME_IN_MS;
     //buffer size has to be divided among the MAX_STREAM_DATA_BUFFERS
     memory_size_per_buffer = ((buffer_size + MAX_STREAM_DATA_BUFFERS - 1)/MAX_STREAM_DATA_BUFFERS);
-    memory_size_per_buffer&=(~(uint32_t)(sizeof(uint32_t)-1)); //make sure that the buffer_size is divisible by uint32_t data type
+    //memory_size_per_buffer&=(~(uint32_t)(sizeof(uint32_t)-1)); //make sure that the buffer_size is divisible by uint32_t data type
 
     for(i = 0; i < STREAM_COUNT(log_ptr); ++i)
     {
