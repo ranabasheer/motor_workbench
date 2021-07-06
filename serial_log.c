@@ -357,21 +357,28 @@ void serial_log_close(void *log_input_ptr)
 }
 
 /*
- * returns true if all the data buffers were reset else it returns false
+ * returns false if all the data buffers for every stream is not transmitting.
+ * else it return true indicating a data buffer is in transit for this output log
  */
-static bool init_output_data_buffers(log_stream_t *log_stream_ptr)
+static bool init_output_data_buffers(log_t *log_ptr)
 {
-    int i;
+    int i,j;
     bool in_transit = false;
     log_stream_ptr->active_stream_data_ptr = NULL;
-    for(i = 0; i < MAX_STREAM_DATA_BUFFERS; ++i)
+    for(j = 0; j < MAX_LOG_STREAM_COUNT; ++j)
     {
-        if(log_stream_ptr->buffers[i]->state != SERIAL_LOG_DATA_TRANSMITTING)
+        log_stream_t *log_stream_ptr = STREAMS(log_ptr)[j];//log_ptr->type.output.streams[j];
+        if(log_stream_ptr == NULL)
+            continue;
+        for(i = 0; i < MAX_STREAM_DATA_BUFFERS; ++i)
         {
-            log_stream_ptr->buffers[i]->state = SERIAL_LOG_DATA_NOT_SET;
+            if(log_stream_ptr->buffers[i]->state != SERIAL_LOG_DATA_TRANSMITTING)
+            {
+                log_stream_ptr->buffers[i]->state = SERIAL_LOG_DATA_NOT_SET;
+            }
+            else
+                in_transit = true;
         }
-        else
-            in_transit = true;
     }
     return in_transit;
 }
@@ -417,7 +424,20 @@ static void log_all_output_data()
             log_stream_ptr->dc_value = dc_lpf*(*log_stream_ptr->data_ptr)+(1-dc_lpf)*log_stream_ptr->data_value;
             if(j == 0)
             {
-                //we trigger the system
+                if(log_state == TRIGGER_WAIT_FOR_TX_BUFFER_EMPTY)
+                {
+                    //we are waiting for all the buffers to be empty
+                    //check to see if any data buffer is not in SERIAL_LOG_DATA_NOT_SET
+                    //tx_buffer_active&=log_stream_ptr->
+                    log_state = init_output_data_buffers(log_ptr)?TRIGGER_WAIT_FOR_TX_BUFFER_EMPTY:TRIGGER_WAIT_FOR_NEGATIVE_TRANSITION;
+                }
+                if(log_state == TRIGGER_WAIT_FOR_NEGATIVE_TRANSITION)
+                {
+                    if(log_stream_ptr->data_value <= log_stream_ptr->dc_value)
+                    {
+                        log_stream_ptr->state = TRIGGER_WAIT_FOR_POSITIVE_TRANSITION;
+                    }
+                }
                 if(log_state == TRIGGER_WAIT_FOR_POSITIVE_TRANSITION)
                 {
                     if(log_stream_ptr->data_value > log_stream_ptr->dc_value)
@@ -425,14 +445,6 @@ static void log_all_output_data()
                         log_state = TRIGGER_ACTIVE;
                         log_ptr->sample_count = 0;
                         store_data = true;
-                        init_output_data_buffer(log_ptr);
-                    }
-                }
-                else if(log_state == TRIGGER_WAIT_FOR_NEGATIVE_TRANSITION)
-                {
-                    if(log_stream_ptr->data_value <= log_stream_ptr->dc_value)
-                    {
-                        log_stream_ptr->state = TRIGGER_WAIT_FOR_POSITIVE_TRANSITION;
                     }
                 }
             }
@@ -443,19 +455,8 @@ static void log_all_output_data()
                     //we ran out of space to send the data. So we have to drop this capture entirely
                     //and send a new set of data.
                     log_state = TRIGGER_WAIT_FOR_TX_BUFFER_EMPTY;
-                    //if there is a data buffer already in transit then we wait for that buffer to go out.
-                    //else we wait for the next trigger;
-                    log_state = init_output_data_buffers(log_stream_ptr)?TRIGGER_WAIT_FOR_TX_BUFFER_EMPTY:TRIGGER_WAIT_FOR_NEGATIVE_TRANSITION;
                     break;
                 }
-            }
-
-            if(log_state == TRIGGER_WAIT_FOR_TX_BUFFER_EMPTY)
-            {
-                //we are waiting for all the buffers to be empty
-                //check to see if any data buffer is not in SERIAL_LOG_DATA_NOT_SET
-                //tx_buffer_active&=log_stream_ptr->
-                log_state = init_output_data_buffers(log_stream_ptr)?TRIGGER_WAIT_FOR_TX_BUFFER_EMPTY:TRIGGER_WAIT_FOR_NEGATIVE_TRANSITION;
             }
         }
 
