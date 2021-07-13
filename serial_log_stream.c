@@ -91,9 +91,11 @@ static log_t *find_ready_stream_data_buffer(uint8_t *log_index, in_transit_buffe
                                     //this buffer is not active and has data filled in it. that means this is ready to go out
                                     //log_stream_data_ptr->state = SERIAL_LOG_DATA_TRANSMITTING;
                                     *log_index = (uint8_t)i;
-                                    streams[count].stream_index = (uint8_t)j;
-                                    streams[count].buffer_index = (uint8_t)k;
-                                    count++;
+                                    in_transit_buffer_info_t *stream = streams + count++;
+                                    stream->stream_index = (uint8_t)j;
+                                    stream->buffer_index = (uint8_t)k;
+                                    //stream->data_offset = log_stream_data_ptr->data_offset;
+                                    //count++;
                                     //return log_stream_data_ptr;
                                 }
                             }
@@ -160,11 +162,18 @@ static void handle_send_stream_data_header_state()
     uint32_t bytes = in_transit_log_stream_data_ptr->data_bits;
 
     bytes = (bytes + 8 - 1)>>3; //ceil operation
+    uint32_t offset = in_transit_log_stream_data_ptr->data_offset;
+    /*if(in_transit_log_stream_data_ptr->triggered)
+    {
+       bytes |= 0x8000; //indicating that a trigger happened
+    }*/
 
     serial_log_store_8bit(stream_header, 0, ((LOG_STREAM_DATA_PACKET_ID&0x3) << 6) | ((stream_index&0x3) << 4) | (log_index&0xF));
     serial_log_store_8bit(stream_header, 1, bytes&0xFF);
     serial_log_store_8bit(stream_header, 2, (bytes>>8)&0xFF);
-    send_uart_data(stream_header, 3, SERIAL_LOG_STREAM_SEND_DATA);
+    serial_log_store_8bit(stream_header, 3, offset&0xFF);
+    serial_log_store_8bit(stream_header, 4, (offset>>8)&0xFF);
+    send_uart_data(stream_header, 5, SERIAL_LOG_STREAM_SEND_DATA);
 }
 
 

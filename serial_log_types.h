@@ -55,13 +55,15 @@ typedef enum log_trigger_state_t
     TRIGGER_WAIT_FOR_POSITIVE_TRANSITION,
     TRIGGER_ACTIVE,
     TRIGGER_WAIT_FOR_TX_BUFFER_EMPTY,
-    TRIGGER_WAIT_FOR_TX_BUFFER_OVFLOW
+    TRIGGER_WAIT_FOR_TX_BUFFER_OVFLOW,
+    TRIGGER_INVALID
 }log_trigger_state_t;
 
 typedef struct log_stream_data_t
 {
     uint32_t *data_ptr; //stream of floating data
     uint32_t data_bits; //if zero then this stream is available for filling
+    uint32_t data_offset;//indicate the start index of where this data will be written
     log_stream_data_state_t state;
 } log_stream_data_t;
 

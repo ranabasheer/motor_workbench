@@ -230,19 +230,11 @@ static log_stream_data_t *find_free_stream_data_buffer(log_stream_t *log_stream_
     return NULL;
 }
 
-static void init_active_stream_data_buffer(log_stream_t *log_stream_ptr)
-{
-    //uint32_t byte_count = BITS_TO_BYTES(log_stream_ptr->max_bit_count);
-    //memset(log_stream_ptr->active_stream_data_ptr->data_ptr, 0, byte_count);
-    log_stream_ptr->active_stream_data_ptr->data_bits = 0;
-    log_stream_ptr->active_stream_data_ptr->state = SERIAL_LOG_DATA_FILLING;
-}
-
-static bool log_data(log_stream_t *log_stream_ptr, float data)
+static bool log_data(log_stream_t *log_stream_ptr, uint32_t data_offset)
 {
     uint32_t value;
     uint32_t value_le;
-    if(log_stream_ptr->active_stream_data_ptr == NULL)
+    /*if(log_stream_ptr->active_stream_data_ptr == NULL)
     {
         //we don't have an active data buffer. Try to see if one freed up because the serial
         //code had sent it out
@@ -254,15 +246,17 @@ static bool log_data(log_stream_t *log_stream_ptr, float data)
             return false;
         }
         init_active_stream_data_buffer(log_stream_ptr);
-    }
-
-    
-    
+    }*/
+    float data = log_stream_ptr->data_value;
+    bool is_active_stream_null = (log_stream_ptr->active_stream_data_ptr == NULL);
+    //if the active stream is null then we set the data_bits to a very large value
+    uint32_t data_bits = is_active_stream_null?((uint32_t)-1):log_stream_ptr->active_stream_data_ptr->data_bits;
     //if we don't have space to add another 32 more bits of data then this buffer is
     //ready to go out. assign the active buffer as the next free one
-    if(log_stream_ptr->active_stream_data_ptr->data_bits >= log_stream_ptr->max_bit_count)
+    if(data_bits >= log_stream_ptr->max_bit_count)
     {
-        log_stream_ptr->active_stream_data_ptr->state = SERIAL_LOG_DATA_READY;
+        if(!is_active_stream_null)
+            log_stream_ptr->active_stream_data_ptr->state = SERIAL_LOG_DATA_READY;
         #ifdef COMPRESS_STREAM
           //let's compress this data stream
           compress_stream(log_stream_ptr);
@@ -282,7 +276,9 @@ static bool log_data(log_stream_t *log_stream_ptr, float data)
         }
         
         //we have a new active stream data ptr so reset all the last data metric
-        init_active_stream_data_buffer(log_stream_ptr);
+        log_stream_ptr->active_stream_data_ptr->data_bits = 0;
+        log_stream_ptr->active_stream_data_ptr->state = SERIAL_LOG_DATA_FILLING;
+        log_stream_ptr->active_stream_data_ptr->data_offset = data_offset;
     }
     
     value_le = *((uint32_t *)&data);
@@ -437,8 +433,11 @@ static void log_all_output_data()
         float lpf = log_ptr->type.output.lpf;
         float dc_lpf  = lpf/10.0;
         log_trigger_state_t log_state = log_ptr->type.output.trigger_state;
+        bool trigger_stream = true;
         if(log_state == TRIGGER_ACTIVE)
         {
+            //if we are storing data then there is no need for triggering
+            trigger_stream = false;
             //store data if the sample count reached the store count
             if(++log_ptr->type.output.sample_count > log_ptr->type.output.sample_index)
             {
@@ -446,7 +445,8 @@ static void log_all_output_data()
                 log_ptr->type.output.sample_count = 0;
             }
         }
-
+        //float trigger_value = 0;
+        float triggered = false;
         for(j = 0; j < MAX_LOG_STREAM_COUNT; ++j)
         {
             log_stream_t *log_stream_ptr = STREAMS(log_ptr)[j];//log_ptr->type.output.streams[j];
@@ -456,24 +456,24 @@ static void log_all_output_data()
             //apply low pass filtering based on their bandwidth
             log_stream_ptr->data_value = lpf*(*log_stream_ptr->data_ptr)+(1-lpf)*log_stream_ptr->data_value;
             log_stream_ptr->dc_value = dc_lpf*(*log_stream_ptr->data_ptr)+(1-dc_lpf)*log_stream_ptr->data_value;
-            if(j == 0)
+            if(trigger_stream) //this is the first stream that will be used for triggering
             {
+                //trigger_value = log_stream_ptr->data_value;
+                trigger_stream = false;
                 if(log_state == TRIGGER_WAIT_FOR_TX_BUFFER_EMPTY)
                 {
-                    //we are waiting for all the buffers to be empty
-                    //check to see if any data buffer is not in SERIAL_LOG_DATA_NOT_SET
-                    //tx_buffer_active&=log_stream_ptr->
+                    //we are waiting for all the buffers to be empty by sending them out to the host
                     log_state = wait_output_data_buffers_empty(log_ptr)?TRIGGER_WAIT_FOR_TX_BUFFER_EMPTY:TRIGGER_WAIT_FOR_NEGATIVE_TRANSITION;
                 }
                 if(log_state == TRIGGER_WAIT_FOR_TX_BUFFER_OVFLOW)
                 {
-                    //we are waiting for all the buffers to be empty
-                    //check to see if any data buffer is not in SERIAL_LOG_DATA_NOT_SET
-                    //tx_buffer_active&=log_stream_ptr->
+                    //if a buffer was being sent out then we will wait for it.
+                    //all other filled buffers but not yet sent will be reset
                     log_state = reset_output_data_buffers(log_ptr)?TRIGGER_WAIT_FOR_TX_BUFFER_OVFLOW:TRIGGER_WAIT_FOR_NEGATIVE_TRANSITION;
                 }
                 if(log_state == TRIGGER_WAIT_FOR_NEGATIVE_TRANSITION)
                 {
+                    //we want the value to dip below the dc value
                     if(log_stream_ptr->data_value <= log_stream_ptr->dc_value)
                     {
                         log_state = TRIGGER_WAIT_FOR_POSITIVE_TRANSITION;
@@ -481,38 +481,35 @@ static void log_all_output_data()
                 }
                 if(log_state == TRIGGER_WAIT_FOR_POSITIVE_TRANSITION)
                 {
+                    //we want the value to plunge above the dc value
                     if(log_stream_ptr->data_value > log_stream_ptr->dc_value)
                     {
                         log_state = TRIGGER_ACTIVE;
                         log_ptr->type.output.sample_count = 0;
                         log_ptr->type.output.store_count = 0;
                         store_data = true;
+                        triggered = true;
                     }
                 }
-                if(!store_data)
-                {
-                    //if we are not storing data then all other streams doesn't matter.
-                   break;
-                }
             }
+
             if(store_data)
             {
-                if(!log_data(log_stream_ptr, log_stream_ptr->data_value))
+                if(j == 0)
+                {
+                    log_ptr->type.output.store_count++;
+                    if(log_ptr->type.output.store_count > 1024)
+                    {
+                        log_state = TRIGGER_WAIT_FOR_TX_BUFFER_EMPTY;
+                        break;
+                    }
+                }
+                if(!log_data(log_stream_ptr, log_ptr->type.output.store_count-1))
                 {
                     //we ran out of space to send the data. So we have to drop this capture entirely
                     //and send a new set of data.
                     log_state = TRIGGER_WAIT_FOR_TX_BUFFER_OVFLOW;
                     break;
-                }
-                log_ptr->type.output.store_count++;
-                if(log_ptr->type.output.store_count > 384)
-                {
-                    log_state = TRIGGER_WAIT_FOR_TX_BUFFER_EMPTY;
-                    break;
-                    /*if(log_stream_ptr->active_stream_data_ptr)
-                    {
-                        log_stream_ptr->active_stream_data_ptr->state = SERIAL_LOG_DATA_READY;
-                    }*/
                 }
             }
         }
